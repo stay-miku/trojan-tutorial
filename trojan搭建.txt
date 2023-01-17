@@ -1,0 +1,157 @@
+1.域名解析
+
+2.https://github.com/p4gefau1t/trojan-go
+在release里找到trojan-go下载链接并在vps里wget下载
+然后unzip解压到一个文件夹去(想放哪放哪,记住就行)
+
+3.trojan-go配置文件:config.json
+把配置文件放到trojan-go解压到的地方(别的地方也行,和可执行程序同目录可以直接./trojan-go运行)              注释记得删(以下所有配置文件都是)
+
+{
+    "run_type": "server",
+    "local_addr": "0.0.0.0",          允许所有ip连接
+    "local_port": 443,                  默认的https端口,增强伪装性
+    "remote_addr": "127.0.0.1",         普通的https访问(非trojan流量时)时返回网页的主机地址,下一个是主机的端口,防止主动探测(浏览器里直接访问就是普通网站)  可以为别的网站的ip地址(做镜像站),也可以是本地搭建的web服务(装nginx)
+    "remote_port": 80,
+    "password": [
+        "密码"
+    ],
+    "ssl": {                                                这段删掉就不启用加密了
+        "cert": "/etc/trojan/server.crt",        证书文件路径    绝对地址是为了方便配置service(见ex2,不配置的话可以用相对路径)
+        "key": "/etc/trojan/server.key",
+        "sni": "域名"
+    },
+    "websocket": {              启用websocket以使用cdn转发流量,垃圾线路可用于提速,也可以防止被墙,或是拯救被墙vps 可以不起用(把这项删了或true改false)
+    "enabled": true,
+    "path": "/路径",
+    "host": "域名"
+    }
+}
+
+openssl rand -base64 20    随机生成密码
+
+4.申请证书      先确保dns解析已生效(ping一下域名看看)
+开发端口
+ufw allow 80
+ufw allow 443
+下载:curl https://get.acme.sh | sh
+安装依赖:apt install socat
+添加软链接，便于后面的操作:ln -s  /root/.acme.sh/acme.sh /usr/local/bin/acme.sh
+注册账号:acme.sh --register-account -m my@example.com     邮箱随便填
+申请证书:acme.sh  --issue -d 域名 --standalone -k ec-256      ec-256为加密方式
+安装证书:acme.sh --installcert -d 域名 --ecc  --key-file   绝对路径/server.key  --fullchain-file 绝对路径/server.crt 
+key和crt路径要与config.json里的相同
+
+5.可以直接运行trojan-go了
+
+6:客户端如何配置:
+不管哪个客户端,选择创建trojan服务器(或是新建配置时选择trojan),然后
+地址:vps的ip或者绑定的域名或者是cdn节点的ip(需配置cdn中转)
+端口:443  (vps哪配置的是啥就是啥)(cdn的话只要cdn到客户端这段是加密的(cloudflare的Flexible Full Full(strict)模式 详见ex3)就是443 不加密就是80(不推荐不加密))
+密码:自己设置的密码
+传输协议:开启了websocket就选ws,否则选tcp
+伪装域名:自己绑定的域名
+路径:websocket里设置的路径,没开启websocket的话不填
+传输层安全:服务端没开ssl且直连或cdn设置Off且cdn中转的话不选,否则选tls
+sni(选择tls后可填):自己的域名
+
+别的全都默认就行了
+
+ex1 本地搭建伪装站点:
+1.配置nginx
+apt install nginx
+
+2.在/etc/nginx/sites-enabled/中创建trojan.conf
+
+server {
+    listen 80;               监听80端口
+    listen [::]:80;           ipv6的80端口
+
+    server_name 填域名;
+
+    root /var/www/trojan;                  网站的根目录,随便填
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+
+3.systemctl restart nginx
+重启nginx服务(配置文件修改后必须重启)
+
+4.在网站根目录下放置网站文件
+
+ex2 为trojan配置service:
+1.在/etc/systemd/system/下新建trojan.service
+
+[Unit]
+Description=Trojan-Go
+After=network.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/etc/trojan/trojan-go -config /etc/trojan/config.json        重点  格式为 trojan可执行文件路径 -config 配置文件路径
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
+
+2.systemctl daemon-reload
+重新载入service
+
+3.systemctl enable trojan
+设置trojan开机自启
+
+4.systemctl start trojan
+启动trojan
+
+ex3 cloudflare cdn中转:
+
+注意事项:
+需在cloudflare配置好dns解析       不必要开proxy模式(不开proxy模式在解析域名时,cloudflare会直接返回vps的真实ip,但是通过cdn的ip访问vps时,cloudflare仍然会帮忙转发流量)
+trojan开启ssl后(开启ssl一般是希望既可以直连又可以cdn转发)记得在cloudflare的SSL设置里改成full或full(strict)  (这俩设置啥作用设置里写了) 最好别是Off
+SSL设置为Off或者Flexible的话vps的trojan端口需要改成80并关闭ssl(把配置文件的ssl那项删了)  不然就是443端口并配置ssl
+
+然后就可以使用cdn的ip作为trojan服务器的ip了
+
+ex4 cloudflare优选ip(选出速度快延迟低的cdn节点):
+
+原理:
+随机从cloudflare的cdn的ip段里挑一些ip,然后把这些ip作为自己的服务器ip,再一个一个的测延迟测速度,筛选出低延迟速度高的ip(搭配负载均衡使用更佳)
+
+一些工具:
+https://bulianglin.com/archives/cdn.html           这个网站可以将trojan订阅链接随机转化成多个使用cdn节点的trojan订阅链接(可以设置数量)
+https://github.com/XIU2/CloudflareSpeedTest    这个工具可以筛选cloudflare的ip(改改ip段文件可以筛别的)  筛选方法是先测延迟再测下载速度然后给出几个比较好的ip
+v2rayn       可以批量导入(对应第一个工具)订阅链接 批量节点测延迟 批量节点测速  手动筛选ip很方便(但是慢)
+
+ex5 clash使用负载均衡(搭配优选ip):
+
+关键配置为:
+  - name: 负载均衡-轮询
+    type: load-balance
+    url: http://www.google.com/generate_204
+    interval: 300
+    strategy: round-robin
+    proxies:
+      - trojan1
+      - trojan2
+      - trojan3
+  - name: 负载均衡-散列
+    type: load-balance
+    url: http://www.google.com/generate_204
+    interval: 300
+    strategy: consistent-hashing
+    proxies:
+      - trojan1
+      - trojan2
+      - trojan3
+
+需要去理解clash配置文件(google搜)
+或https://github.com/stay-miku/Trojan2Clash-preferredip 自己写的trojan转clash(并带有负载均衡)的脚本,可搭配v2rayn使用
+
+
+
